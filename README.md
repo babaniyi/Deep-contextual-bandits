@@ -284,7 +284,7 @@ python test_neural_bandit.py
 
 ## Citation
 
-If you use this code in your research, please cite the original paper:
+If you use this code in your research, please cite both the original paper and this PyTorch implementation:
 
 ```bibtex
 @inproceedings{riquelme2018deep,
@@ -292,6 +292,14 @@ If you use this code in your research, please cite the original paper:
   author={Riquelme, Carlos and Tucker, George and Snoek, Jasper},
   booktitle={International Conference on Learning Representations},
   year={2018}
+}
+
+@software{olaniyi2024deep,
+  title={Deep Contextual Bandits: PyTorch Implementation},
+  author={Olaniyi, Babaniyi},
+  year={2024},
+  url={https://github.com/babaniyi/Deep-contextual-bandits},
+  note={PyTorch port of the original TensorFlow implementation with comprehensive benchmarking}
 }
 ```
 
