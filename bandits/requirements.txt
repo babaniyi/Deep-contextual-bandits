@@ -1,0 +1,7 @@
+torch>=2.0.0
+numpy
+scipy
+scikit-learn
+tqdm
+pandas>=1.1.0
+ucimlrepo>=0.0.3 

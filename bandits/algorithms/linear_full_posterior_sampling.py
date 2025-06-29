@@ -67,9 +67,8 @@ class LinearFullPosteriorSampling(BanditAlgorithm):
     self.b = [self._b0 for _ in range(self.hparams.num_actions)]
 
     self.t = 0
-    self.data_h = ContextualDataset(hparams.context_dim,
-                                    hparams.num_actions,
-                                    intercept=True)
+    self.data_h = ContextualDataset(np.empty((0, hparams.context_dim)), 
+                                   np.empty((0, hparams.num_actions)))
 
   def action(self, context):
     """Samples beta's from posterior, and chooses best action accordingly.
@@ -124,15 +123,21 @@ class LinearFullPosteriorSampling(BanditAlgorithm):
     self.data_h.add(context, action, reward)
 
     # Update posterior of action with formulas: \beta | x,y ~ N(mu_q, cov_q)
-    x, y = self.data_h.get_data(action)
+    x, y = self.data_h.get_batch_for_action(action)
+    
+    if len(x) == 0:
+        return  # No data for this action yet
+
+    # Add intercept term to contexts
+    x_with_intercept = np.column_stack([x, np.ones(len(x))])
 
     # The algorithm could be improved with sequential update formulas (cheaper)
-    s = np.dot(x.T, x)
+    s = np.dot(x_with_intercept.T, x_with_intercept)
 
     # Some terms are removed as we assume prior mu_0 = 0.
     precision_a = s + self.lambda_prior * np.eye(self.hparams.context_dim + 1)
     cov_a = np.linalg.inv(precision_a)
-    mu_a = np.dot(cov_a, np.dot(x.T, y))
+    mu_a = np.dot(cov_a, np.dot(x_with_intercept.T, y))
 
     # Inverse Gamma posterior update
     a_post = self.a0 + x.shape[0] / 2.0

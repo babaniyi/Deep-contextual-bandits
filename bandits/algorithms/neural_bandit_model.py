@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-"""Define a family of neural network architectures for bandits.
+"""Define a family of neural network architectures for bandits (PyTorch version).
 The network accepts different type of optimizers that could lead to different
 approximations of the posterior distribution or simply to point estimates.
 """
@@ -22,195 +22,250 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import tensorflow as tf
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
+from typing import Dict, Any, Optional, Tuple
+import numpy as np
 
 from absl import flags
-from bandits.core.bayesian_nn import BayesianNN
+from bandits.core.bayesian_nn import BayesianNeuralNetwork
 
 FLAGS = flags.FLAGS
 
 
-class NeuralBanditModel(BayesianNN):
-  """Implements a neural network for bandit problems."""
+class NeuralBanditModel(BayesianNeuralNetwork):
+    """Implements a neural network for bandit problems using PyTorch."""
 
-  def __init__(self, optimizer, hparams, name):
-    """Saves hyper-params and builds the Tensorflow graph."""
+    def __init__(self, hparams: Dict[str, Any], name: str = "neural_bandit"):
+        """Initialize the neural bandit model.
+        
+        Args:
+            hparams: Dictionary containing hyperparameters
+            name: Name of the model
+        """
+        super().__init__()
+        
+        self.name = name
+        self.hparams = hparams
+        self.verbose = hparams.get("verbose", True)
+        self.times_trained = 0
+        
+        # Extract hyperparameters
+        self.context_dim = hparams["context_dim"]
+        self.num_actions = hparams["num_actions"]
+        self.layer_sizes = hparams.get("layer_sizes", [100, 100])
+        self.activation = hparams.get("activation", "relu")
+        self.learning_rate = hparams.get("initial_lr", 0.001)
+        self.batch_size = hparams.get("batch_size", 512)
+        self.init_scale = hparams.get("init_scale", 0.3)
+        self.use_dropout = hparams.get("use_dropout", False)
+        self.dropout_rate = hparams.get("dropout_rate", 0.1)
+        self.layer_norm = hparams.get("layer_norm", False)
+        
+        self.build_model()
 
-    self.opt_name = optimizer
-    self.name = name
-    self.hparams = hparams
-    self.verbose = getattr(self.hparams, "verbose", True)
-    self.times_trained = 0
-    self.build_model()
-
-  def build_layer(self, x, num_units):
-    """Builds a layer with input x; dropout and layer norm if specified."""
-
-    init_s = self.hparams.init_scale
-
-    layer_n = getattr(self.hparams, "layer_norm", False)
-    dropout = getattr(self.hparams, "use_dropout", False)
-
-    nn = tf.contrib.layers.fully_connected(
-        x,
-        num_units,
-        activation_fn=self.hparams.activation,
-        normalizer_fn=None if not layer_n else tf.contrib.layers.layer_norm,
-        normalizer_params={},
-        weights_initializer=tf.random_uniform_initializer(-init_s, init_s)
-    )
-
-    if dropout:
-      nn = tf.nn.dropout(nn, self.hparams.keep_prob)
-
-    return nn
-
-  def forward_pass(self):
-
-    init_s = self.hparams.init_scale
-
-    scope_name = "prediction_{}".format(self.name)
-    with tf.variable_scope(scope_name, reuse=tf.AUTO_REUSE):
-      nn = self.x
-      for num_units in self.hparams.layer_sizes:
-        if num_units > 0:
-          nn = self.build_layer(nn, num_units)
-
-      y_pred = tf.layers.dense(
-          nn,
-          self.hparams.num_actions,
-          kernel_initializer=tf.random_uniform_initializer(-init_s, init_s))
-
-    return nn, y_pred
-
-  def build_model(self):
-    """Defines the actual NN model with fully connected layers.
-    The loss is computed for partial feedback settings (bandits), so only
-    the observed outcome is backpropagated (see weighted loss).
-    Selects the optimizer and, finally, it also initializes the graph.
-    """
-
-    # create and store the graph corresponding to the BNN instance
-    self.graph = tf.Graph()
-
-    with self.graph.as_default():
-
-      # create and store a new session for the graph
-      self.sess = tf.Session()
-
-      with tf.name_scope(self.name):
-
-        self.global_step = tf.train.get_or_create_global_step()
-
-        # context
-        self.x = tf.placeholder(
-            shape=[None, self.hparams.context_dim],
-            dtype=tf.float32,
-            name="{}_x".format(self.name))
-
-        # reward vector
-        self.y = tf.placeholder(
-            shape=[None, self.hparams.num_actions],
-            dtype=tf.float32,
-            name="{}_y".format(self.name))
-
-        # weights (1 for selected action, 0 otherwise)
-        self.weights = tf.placeholder(
-            shape=[None, self.hparams.num_actions],
-            dtype=tf.float32,
-            name="{}_w".format(self.name))
-
-        # with tf.variable_scope("prediction_{}".format(self.name)):
-        self.nn, self.y_pred = self.forward_pass()
-        self.loss = tf.squared_difference(self.y_pred, self.y)
-        self.weighted_loss = tf.multiply(self.weights, self.loss)
-        self.cost = tf.reduce_sum(self.weighted_loss) / self.hparams.batch_size
-
-        if self.hparams.activate_decay:
-          self.lr = tf.train.inverse_time_decay(
-              self.hparams.initial_lr, self.global_step,
-              1, self.hparams.lr_decay_rate)
-        else:
-          self.lr = tf.Variable(self.hparams.initial_lr, trainable=False)
-
-        # create tensorboard metrics
-        self.create_summaries()
-        self.summary_writer = tf.summary.FileWriter(
-            "{}/graph_{}".format(FLAGS.logdir, self.name), self.sess.graph)
-
-        tvars = tf.trainable_variables()
-        grads, _ = tf.clip_by_global_norm(
-            tf.gradients(self.cost, tvars), self.hparams.max_grad_norm)
-
-        self.optimizer = self.select_optimizer()
-
-        self.train_op = self.optimizer.apply_gradients(
-            zip(grads, tvars), global_step=self.global_step)
-
-        self.init = tf.global_variables_initializer()
-
-        self.initialize_graph()
-
-  def initialize_graph(self):
-    """Initializes all variables."""
-
-    with self.graph.as_default():
-      if self.verbose:
-        print("Initializing model {}.".format(self.name))
-      self.sess.run(self.init)
-
-  def assign_lr(self):
-    """Resets the learning rate in dynamic schedules for subsequent trainings.
-    In bandits settings, we do expand our dataset over time. Then, we need to
-    re-train the network with the new data. The algorithms that do not keep
-    the step constant, can reset it at the start of each *training* process.
-    """
-
-    decay_steps = 1
-    if self.hparams.activate_decay:
-      current_gs = self.sess.run(self.global_step)
-      with self.graph.as_default():
-        self.lr = tf.train.inverse_time_decay(self.hparams.initial_lr,
-                                              self.global_step - current_gs,
-                                              decay_steps,
-                                              self.hparams.lr_decay_rate)
-
-  def select_optimizer(self):
-    """Selects optimizer. To be extended (SGLD, KFAC, etc)."""
-    return tf.train.RMSPropOptimizer(self.lr)
-
-  def create_summaries(self):
-    """Defines summaries including mean loss, learning rate, and global step."""
-
-    with self.graph.as_default():
-      with tf.name_scope(self.name + "_summaries"):
-        tf.summary.scalar("cost", self.cost)
-        tf.summary.scalar("lr", self.lr)
-        tf.summary.scalar("global_step", self.global_step)
-        self.summary_op = tf.summary.merge_all()
-
-  def train(self, data, num_steps):
-    """Trains the network for num_steps, using the provided data.
-    Args:
-      data: ContextualDataset object that provides the data.
-      num_steps: Number of minibatches to train the network for.
-    """
-
-    if self.verbose:
-      print("Training {} for {} steps...".format(self.name, num_steps))
-
-    with self.graph.as_default():
-
-      for step in range(num_steps):
-        x, y, w = data.get_batch_with_weights(self.hparams.batch_size)
-        _, cost, summary, lr = self.sess.run(
-            [self.train_op, self.cost, self.summary_op, self.lr],
-            feed_dict={self.x: x, self.y: y, self.weights: w})
-
-        if step % self.hparams.freq_summary == 0:
-          if self.hparams.show_training:
-            print("{} | step: {}, lr: {}, loss: {}".format(
-                self.name, step, lr, cost))
-          self.summary_writer.add_summary(summary, step)
-
-      self.times_trained += 1
+    def build_model(self):
+        """Build the neural network architecture."""
+        layers = []
+        input_dim = self.context_dim
+        
+        # Build hidden layers
+        for layer_size in self.layer_sizes:
+            if layer_size > 0:
+                layers.append(nn.Linear(input_dim, layer_size))
+                
+                if self.layer_norm:
+                    layers.append(nn.LayerNorm(layer_size))
+                    
+                if self.activation == "relu":
+                    layers.append(nn.ReLU())
+                elif self.activation == "tanh":
+                    layers.append(nn.Tanh())
+                elif self.activation == "sigmoid":
+                    layers.append(nn.Sigmoid())
+                    
+                if self.use_dropout:
+                    layers.append(nn.Dropout(self.dropout_rate))
+                    
+                input_dim = layer_size
+        
+        # Output layer
+        layers.append(nn.Linear(input_dim, self.num_actions))
+        
+        self.network = nn.Sequential(*layers)
+        
+        # Initialize weights
+        self._initialize_weights()
+        
+        # Setup optimizer
+        self.optimizer = optim.Adam(self.parameters(), lr=self.learning_rate)
+        
+        if self.verbose:
+            print(f"Initialized model {self.name} with {sum(p.numel() for p in self.parameters())} parameters")
+    
+    def _initialize_weights(self):
+        """Initialize network weights."""
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.uniform_(module.weight, -self.init_scale, self.init_scale)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass through the network.
+        
+        Args:
+            x: Input tensor of shape (batch_size, context_dim)
+            
+        Returns:
+            Output tensor of shape (batch_size, num_actions)
+        """
+        return self.network(x)
+    
+    def sample_weights(self):
+        """Sample weights from the posterior (or approximate posterior).
+        For this basic implementation, we return the current weights.
+        Subclasses can override this for Bayesian methods.
+        """
+        return self.state_dict()
+    
+    def train_step(self, contexts: torch.Tensor, rewards: torch.Tensor, 
+                   actions: torch.Tensor) -> float:
+        """Perform one training step.
+        
+        Args:
+            contexts: Context tensors of shape (batch_size, context_dim)
+            rewards: Reward tensors of shape (batch_size,)
+            actions: Action indices of shape (batch_size,)
+            
+        Returns:
+            Loss value
+        """
+        self.optimizer.zero_grad()
+        
+        # Forward pass
+        predictions = self.forward(contexts)  # (batch_size, num_actions)
+        
+        # Create target tensor with rewards only for taken actions
+        targets = torch.zeros_like(predictions)
+        targets.scatter_(1, actions.unsqueeze(1), rewards.unsqueeze(1))
+        
+        # Compute loss (only for observed actions)
+        loss = F.mse_loss(predictions, targets, reduction='none')
+        mask = (targets != 0).float()
+        weighted_loss = (loss * mask).sum() / mask.sum()
+        
+        # Backward pass
+        weighted_loss.backward()
+        self.optimizer.step()
+        
+        return weighted_loss.item()
+    
+    def train_model(self, data, num_steps: int):
+        """Train the network for num_steps using the provided data.
+        
+        Args:
+            data: ContextualDataset object that provides the data
+            num_steps: Number of training steps
+        """
+        if self.verbose:
+            print(f"Training {self.name} for {num_steps} steps...")
+        
+        self.train()  # Set to training mode
+        
+        for step in range(num_steps):
+            # Sample batch from data
+            batch_indices = np.random.choice(len(data), self.batch_size, replace=True)
+            contexts_batch = []
+            rewards_batch = []
+            actions_batch = []
+            
+            for idx in batch_indices:
+                context, reward = data[idx]
+                action = np.random.randint(0, self.num_actions)  # Placeholder
+                contexts_batch.append(context)
+                # Always extract the reward for the chosen action as a float
+                if isinstance(reward, torch.Tensor):
+                    if reward.dim() > 0:
+                        reward_val = reward[action].item()
+                    else:
+                        reward_val = reward.item()
+                elif isinstance(reward, (np.ndarray, list)):
+                    reward_val = float(reward[action]) if len(reward) > 1 else float(reward)
+                else:
+                    reward_val = float(reward)
+                rewards_batch.append(reward_val)
+                actions_batch.append(action)
+            
+            contexts = torch.stack(contexts_batch)
+            rewards = torch.tensor(rewards_batch, dtype=torch.float32)
+            actions = torch.tensor(actions_batch, dtype=torch.long)
+            
+            loss = self.train_step(contexts, rewards, actions)
+            
+            if self.verbose and step % 100 == 0:
+                print(f"Step {step}, Loss: {loss:.4f}")
+        
+        self.times_trained += 1
+    
+    def predict(self, contexts: torch.Tensor) -> torch.Tensor:
+        """Predict rewards for given contexts.
+        
+        Args:
+            contexts: Context tensors of shape (batch_size, context_dim)
+            
+        Returns:
+            Predicted rewards of shape (batch_size, num_actions)
+        """
+        self.eval()  # Set to evaluation mode
+        with torch.no_grad():
+            return self.forward(contexts)
+    
+    def get_action(self, context: np.ndarray) -> int:
+        """Get the best action for a given context.
+        
+        Args:
+            context: Context array of shape (context_dim,)
+            
+        Returns:
+            Action index
+        """
+        context_tensor = torch.tensor(context, dtype=torch.float32).unsqueeze(0)
+        predictions = self.predict(context_tensor)
+        return torch.argmax(predictions, dim=1).item()
+    
+    def action(self, context: np.ndarray) -> int:
+        """Select action for context (interface for run_contextual_bandit).
+        
+        Args:
+            context: Context array of shape (context_dim,)
+            
+        Returns:
+            Action index
+        """
+        return self.get_action(context)
+    
+    def update(self, context: np.ndarray, action: int, reward: float):
+        """Update the model with new data (interface for run_contextual_bandit).
+        
+        Args:
+            context: Context array
+            action: Action taken
+            reward: Reward received
+        """
+        # For now, we'll just store the data
+        # In a more sophisticated implementation, you might want to retrain periodically
+        if not hasattr(self, 'data_buffer'):
+            from bandits.core.contextual_dataset import ContextualDataset
+            self.data_buffer = ContextualDataset(
+                np.empty((0, self.context_dim)), 
+                np.empty((0, self.num_actions))
+            )
+        
+        self.data_buffer.add(context, action, reward)
+        
+        # Optionally retrain periodically
+        if len(self.data_buffer) % 100 == 0 and len(self.data_buffer) > 0:
+            self.train_model(self.data_buffer, 10)  # Retrain for 10 steps
