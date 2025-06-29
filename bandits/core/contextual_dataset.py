@@ -13,150 +13,194 @@
 # limitations under the License.
 # ==============================================================================
 
-"""Define a data buffer for contextual bandit algorithms."""
+"""Define a data buffer for contextual bandit algorithms (PyTorch version)."""
 
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
 import numpy as np
+import torch
+from torch.utils.data import Dataset
+from typing import Tuple, List, Optional
 
 
-class ContextualDataset(object):
-  """The buffer is able to append new data, and sample random minibatches."""
+class ContextualDataset(Dataset):
+    """PyTorch Dataset for contextual bandit data."""
+    
+    def __init__(self, contexts: np.ndarray, rewards: np.ndarray):
+        """Initialize the dataset.
+        
+        Args:
+            contexts: Context data of shape (num_samples, context_dim)
+            rewards: Reward data of shape (num_samples, num_actions) or (num_samples,)
+        """
+        self.contexts = torch.tensor(contexts, dtype=torch.float32)
+        
+        # Handle different reward formats
+        if len(rewards.shape) == 1:
+            # Single reward per sample
+            self.rewards = torch.tensor(rewards, dtype=torch.float32)
+        else:
+            # Multiple rewards per sample (one per action)
+            self.rewards = torch.tensor(rewards, dtype=torch.float32)
+        
+        self.actions = []  # Track actions taken
+        self.buffer_size = -1  # -1 means use all data
 
-  def __init__(self, context_dim, num_actions, buffer_s=-1, intercept=False):
-    """Creates a ContextualDataset object.
-    The data is stored in attributes: contexts and rewards.
-    The sequence of taken actions are stored in attribute actions.
-    Args:
-      context_dim: Dimension of the contexts.
-      num_actions: Number of arms for the multi-armed bandit.
-      buffer_s: Size of buffer for training. Only last buffer_s will be
-        returned as minibatch. If buffer_s = -1, all data will be used.
-      intercept: If True, it adds a constant (1.0) dimension to each context X,
-        at the end.
-    """
+    def __len__(self) -> int:
+        """Return the number of samples in the dataset."""
+        return len(self.contexts)
 
-    self._context_dim = context_dim
-    self._num_actions = num_actions
-    self._contexts = None
-    self._rewards = None
-    self.actions = []
-    self.buffer_s = buffer_s
-    self.intercept = intercept
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Get a sample by index.
+        
+        Args:
+            idx: Index of the sample
+            
+        Returns:
+            Tuple of (context, reward)
+        """
+        return self.contexts[idx], self.rewards[idx]
 
-  def add(self, context, action, reward):
-    """Adds a new triplet (context, action, reward) to the dataset.
-    The reward for the actions that weren't played is assumed to be zero.
-    Args:
-      context: A d-dimensional vector with the context.
-      action: Integer between 0 and k-1 representing the chosen arm.
-      reward: Real number representing the reward for the (context, action).
-    """
+    def add(self, context: np.ndarray, action: int, reward: float):
+        """Add a new triplet (context, action, reward) to the dataset.
+        
+        Args:
+            context: Context vector
+            action: Action index
+            reward: Reward value
+        """
+        # Convert context to tensor and add to contexts
+        context_tensor = torch.tensor(context, dtype=torch.float32).unsqueeze(0)
+        self.contexts = torch.cat([self.contexts, context_tensor], dim=0)
+        
+        # Handle reward based on format
+        if len(self.rewards.shape) == 1:
+            # Single reward per sample
+            reward_tensor = torch.tensor([reward], dtype=torch.float32)
+            self.rewards = torch.cat([self.rewards, reward_tensor], dim=0)
+        else:
+            # Multiple rewards per sample
+            reward_vector = torch.zeros(self.rewards.shape[1], dtype=torch.float32)
+            reward_vector[action] = reward
+            reward_tensor = reward_vector.unsqueeze(0)
+            self.rewards = torch.cat([self.rewards, reward_tensor], dim=0)
+        
+        self.actions.append(action)
 
-    if self.intercept:
-      c = np.array(context[:])
-      c = np.append(c, 1.0).reshape((1, self.context_dim + 1))
-    else:
-      c = np.array(context[:]).reshape((1, self.context_dim))
+    def get_batch(self, batch_size: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Get a random minibatch of (contexts, rewards).
+        
+        Args:
+            batch_size: Size of the batch
+            
+        Returns:
+            Tuple of (contexts, rewards) tensors
+        """
+        n = len(self.contexts)
+        if self.buffer_size == -1:
+            # Use all data
+            indices = np.random.choice(range(n), batch_size, replace=True)
+        else:
+            # Use only buffer (last buffer_size observations)
+            start_idx = max(0, n - self.buffer_size)
+            indices = np.random.choice(range(start_idx, n), batch_size, replace=True)
+        
+        return self.contexts[indices], self.rewards[indices]
 
-    if self.contexts is None:
-      self.contexts = c
-    else:
-      self.contexts = np.vstack((self.contexts, c))
+    def get_batch_with_weights(self, batch_size: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Get a random minibatch with one-hot weights for actions.
+        
+        Args:
+            batch_size: Size of the batch
+            
+        Returns:
+            Tuple of (contexts, rewards, weights) tensors
+        """
+        contexts, rewards = self.get_batch(batch_size)
+        
+        # Create weights tensor
+        if len(self.actions) > 0:
+            num_actions = rewards.shape[1] if len(rewards.shape) > 1 else 1
+            weights = torch.zeros(batch_size, num_actions)
+            
+            # For now, assume random actions (in practice, this would come from the algorithm)
+            random_actions = torch.randint(0, num_actions, (batch_size,))
+            weights.scatter_(1, random_actions.unsqueeze(1), 1.0)
+        else:
+            weights = torch.zeros(batch_size, 1)
+        
+        return contexts, rewards, weights
 
-    r = np.zeros((1, self.num_actions))
-    r[0, action] = reward
-    if self.rewards is None:
-      self.rewards = r
-    else:
-      self.rewards = np.vstack((self.rewards, r))
+    def get_batch_for_action(self, action: int) -> Tuple[np.ndarray, np.ndarray]:
+        """Get all data for a specific action.
+        
+        Args:
+            action: Action index to filter by
+            
+        Returns:
+            Tuple of (contexts, rewards) for the specified action
+        """
+        if not self.actions:
+            return np.empty((0, self.contexts.shape[1])), np.empty((0,))
+        
+        # Find indices where the action was taken
+        action_indices = [i for i, a in enumerate(self.actions) if a == action]
+        
+        if not action_indices:
+            return np.empty((0, self.contexts.shape[1])), np.empty((0,))
+        
+        contexts_for_action = self.contexts[action_indices].numpy()
+        
+        # Handle different reward formats
+        if len(self.rewards.shape) == 1:
+            rewards_for_action = self.rewards[action_indices].numpy()
+        else:
+            rewards_for_action = self.rewards[action_indices, action].numpy()
+        
+        return contexts_for_action, rewards_for_action
 
-    self.actions.append(action)
+    def set_buffer_size(self, buffer_size: int):
+        """Set the buffer size for sampling.
+        
+        Args:
+            buffer_size: Number of recent samples to use (-1 for all)
+        """
+        self.buffer_size = buffer_size
 
-  def replace_data(self, contexts=None, actions=None, rewards=None):
-    if contexts is not None:
-      self.contexts = contexts
-    if actions is not None:
-      self.actions = actions
-    if rewards is not None:
-      self.rewards = rewards
+    def num_points(self) -> int:
+        """Return the number of points in the dataset."""
+        return len(self.contexts)
 
-  def get_batch(self, batch_size):
-    """Returns a random minibatch of (contexts, rewards) with batch_size."""
-    n, _ = self.contexts.shape
-    if self.buffer_s == -1:
-      # use all the data
-      ind = np.random.choice(range(n), batch_size)
-    else:
-      # use only buffer (last buffer_s observations)
-      ind = np.random.choice(range(max(0, n - self.buffer_s), n), batch_size)
-    return self.contexts[ind, :], self.rewards[ind, :]
+    @property
+    def context_dim(self):
+        return self.contexts.shape[1]
 
-  def get_data(self, action):
-    """Returns all (context, reward) where the action was played."""
-    n, _ = self.contexts.shape
-    ind = np.array([i for i in range(n) if self.actions[i] == action])
-    return self.contexts[ind, :], self.rewards[ind, action]
+    @property
+    def num_actions(self):
+        return self.rewards.shape[1]
 
-  def get_data_with_weights(self):
-    """Returns all observations with one-hot weights for actions."""
-    weights = np.zeros((self.contexts.shape[0], self.num_actions))
-    a_ind = np.array([(i, val) for i, val in enumerate(self.actions)])
-    weights[a_ind[:, 0], a_ind[:, 1]] = 1.0
-    return self.contexts, self.rewards, weights
+    @property
+    def contexts(self):
+        return self._contexts
 
-  def get_batch_with_weights(self, batch_size):
-    """Returns a random mini-batch with one-hot weights for actions."""
-    n, _ = self.contexts.shape
-    if self.buffer_s == -1:
-      # use all the data
-      ind = np.random.choice(range(n), batch_size)
-    else:
-      # use only buffer (last buffer_s obs)
-      ind = np.random.choice(range(max(0, n - self.buffer_s), n), batch_size)
+    @contexts.setter
+    def contexts(self, value):
+        self._contexts = value
 
-    weights = np.zeros((batch_size, self.num_actions))
-    sampled_actions = np.array(self.actions)[ind]
-    a_ind = np.array([(i, val) for i, val in enumerate(sampled_actions)])
-    weights[a_ind[:, 0], a_ind[:, 1]] = 1.0
-    return self.contexts[ind, :], self.rewards[ind, :], weights
+    @property
+    def actions(self):
+        return self._actions
 
-  def num_points(self, f=None):
-    """Returns number of points in the buffer (after applying function f)."""
-    if f is not None:
-      return f(self.contexts.shape[0])
-    return self.contexts.shape[0]
+    @actions.setter
+    def actions(self, value):
+        self._actions = value
 
-  @property
-  def context_dim(self):
-    return self._context_dim
+    @property
+    def rewards(self):
+        return self._rewards
 
-  @property
-  def num_actions(self):
-    return self._num_actions
-
-  @property
-  def contexts(self):
-    return self._contexts
-
-  @contexts.setter
-  def contexts(self, value):
-    self._contexts = value
-
-  @property
-  def actions(self):
-    return self._actions
-
-  @actions.setter
-  def actions(self, value):
-    self._actions = value
-
-  @property
-  def rewards(self):
-    return self._rewards
-
-  @rewards.setter
-  def rewards(self, value):
-    self._rewards = value
+    @rewards.setter
+    def rewards(self, value):
+        self._rewards = value

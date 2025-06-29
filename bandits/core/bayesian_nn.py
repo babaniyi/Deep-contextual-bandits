@@ -19,6 +19,38 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from abc import ABC, abstractmethod
+
+class BayesianNeuralNetwork(nn.Module, ABC):
+    """
+    Base class for Bayesian Neural Networks for contextual bandits.
+    """
+    def __init__(self):
+        super().__init__()
+
+    @abstractmethod
+    def forward(self, x):
+        """
+        Forward pass through the network.
+        """
+        pass
+
+    @abstractmethod
+    def sample_weights(self):
+        """
+        Sample weights from the posterior (or approximate posterior).
+        """
+        pass
+
+    def log_likelihood(self, x, y):
+        """
+        Compute the log likelihood of the data under the model.
+        Optional: override in subclasses if needed.
+        """
+        raise NotImplementedError
 
 class BayesianNN(object):
   """A Bayesian neural network keeps a distribution over neural nets."""

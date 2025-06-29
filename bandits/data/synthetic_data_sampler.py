@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-"""Several functions to sample contextual data."""
+"""Several functions to sample contextual data (PyTorch/NumPy version)."""
 
 from __future__ import absolute_import
 from __future__ import division
