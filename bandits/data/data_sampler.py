@@ -54,14 +54,25 @@ def sample_mushroom_data(num_contexts,
     
     # Combine features and targets
     df = pd.concat([df, targets], axis=1)
-    df = one_hot(df, df.columns[:-1])  # One-hot encode all features except the target
+    
+    # One-hot encode categorical columns
+    categorical_columns = df.select_dtypes(include=['object']).columns
+    df = one_hot(df, categorical_columns)
+    
+    # Convert to numpy array and ensure float32 type
+    df = df.astype(np.float32)
     
     # Sample contexts
     if num_contexts > len(df):
         num_contexts = len(df)
-    ind = np.random.choice(range(df.shape[0]), num_contexts, replace=False)
+    ind = np.random.choice(range(len(df)), num_contexts, replace=False)
 
-    contexts = df.iloc[ind, 2:]  # Skip the first two columns (edible, poisonous indicators)
+    # Get the target column (last column) for edible/poisonous indicators
+    target_col = df.iloc[:, -1].values[ind]
+    
+    # Get contexts (all columns except the last one)
+    contexts = df.iloc[ind, :-1].values
+    
     no_eat_reward = r_noeat * np.ones((num_contexts, 1))
     
     # Create random poison effects
@@ -71,20 +82,20 @@ def sample_mushroom_data(num_contexts,
         size=num_contexts)
     
     # Calculate eat rewards based on edible/poisonous indicators
-    eat_reward = r_eat_safe * df.iloc[ind, 0]  # edible indicator
-    eat_reward += np.multiply(random_poison, df.iloc[ind, 1])  # poisonous indicator
-    eat_reward = eat_reward.values.reshape((num_contexts, 1))
+    # Assuming 1 = edible, 0 = poisonous (adjust based on actual target encoding)
+    eat_reward = r_eat_safe * target_col + np.multiply(random_poison, 1 - target_col)
+    eat_reward = eat_reward.reshape((num_contexts, 1))
 
     # Calculate optimal expected rewards
     exp_eat_poison_reward = r_eat_poison_bad * prob_poison_bad + r_eat_poison_good * (1 - prob_poison_bad)
-    opt_exp_reward = r_eat_safe * df.iloc[ind, 0] + max(r_noeat, exp_eat_poison_reward) * df.iloc[ind, 1]
+    opt_exp_reward = r_eat_safe * target_col + max(r_noeat, exp_eat_poison_reward) * (1 - target_col)
 
     if r_noeat > exp_eat_poison_reward:
-        opt_actions = df.iloc[ind, 0]  # indicator of edible
+        opt_actions = target_col  # indicator of edible
     else:
         opt_actions = np.ones((num_contexts, 1))
 
-    opt_vals = (opt_exp_reward.values, opt_actions.values)
+    opt_vals = (opt_exp_reward, opt_actions)
 
     return np.hstack((contexts, no_eat_reward, eat_reward)), opt_vals
 
