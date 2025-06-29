@@ -190,15 +190,34 @@ python3 example_main.py --data_type=mushroom --num_contexts=2000 --data_dir data
 
 ## Dataset Setup
 
-### Real Datasets
+### Automatic Dataset Fetching (Recommended)
 
-To use real datasets, download them to a `datasets/` folder:
+Most datasets are automatically fetched using the `ucimlrepo` package. This is the easiest way to get started:
+
+```bash
+# Install ucimlrepo if not already installed
+pip install ucimlrepo
+
+# The datasets will be automatically downloaded when you run experiments
+python3 example_main.py --data_type=adult --num_contexts=1000
+```
+
+**Supported datasets with automatic fetching:**
+- **Adult**: UCI Adult dataset (income prediction)
+- **Mushroom**: UCI Mushroom dataset (edible/poisonous classification)
+- **Covertype**: UCI Covertype dataset (forest cover type prediction)
+- **Census**: UCI Census 1990 dataset (demographic analysis)
+- **Statlog Shuttle**: UCI Statlog Shuttle dataset (space shuttle control)
+
+### Manual Dataset Setup (Optional)
+
+For datasets not available through ucimlrepo or for custom datasets, you can manually download and place them in the `datasets/` folder:
 
 ```bash
 mkdir datasets
 cd datasets
 
-# Download datasets (you'll need to obtain these files)
+# Download datasets manually (examples)
 # - mushroom.data (UCI Mushroom dataset)
 # - raw_stock_contexts (Financial data)
 # - jester_data_40jokes_19181users.npy (Jester dataset)
@@ -208,13 +227,65 @@ cd datasets
 # - USCensus1990.data.txt (Census dataset)
 ```
 
+### Custom Dataset Integration
+
+To use your own custom dataset, you can:
+
+1. **Create a custom data sampler function** in `bandits/data/data_sampler.py`:
+
+```python
+def sample_custom_data(num_contexts, shuffle_rows=True):
+    """Returns bandit problem dataset based on your custom data."""
+    # Load your data
+    data = np.loadtxt('datasets/your_custom_data.txt')
+    
+    if shuffle_rows:
+        np.random.shuffle(data)
+    
+    data = data[:num_contexts, :]
+    contexts = data[:, :-1]
+    labels = data[:, -1].astype(int)
+    
+    num_actions = len(np.unique(labels))
+    return classification_to_bandit_problem(contexts, labels, num_actions)
+```
+
+2. **Add your dataset to the sample_data function** in `example_main.py`:
+
+```python
+elif data_type == 'custom':
+    num_contexts = min(10000, num_contexts)  # Adjust max size
+    dataset, (opt_rewards, opt_actions) = sample_custom_data(num_contexts, shuffle_rows=True)
+    num_actions = len(np.unique(opt_actions))
+    context_dim = dataset.shape[1] - num_actions
+```
+
+3. **Update the argument parser choices**:
+
+```python
+parser.add_argument('--data_type', type=str, default='linear', 
+                   choices=['linear', 'sparse_linear', 'wheel', 'mushroom', 'financial', 
+                           'jester', 'statlog', 'adult', 'covertype', 'census', 
+                           'statlog_shuttle', 'custom'],
+                   help='Type of dataset to use')
+```
+
 ### Dataset Sources
 
+- **UCI Machine Learning Repository**: [https://archive.ics.uci.edu/ml/](https://archive.ics.uci.edu/ml/)
 - **Mushroom**: [UCI Mushroom Dataset](https://archive.ics.uci.edu/ml/datasets/mushroom)
 - **Adult**: [UCI Adult Dataset](https://archive.ics.uci.edu/ml/datasets/adult)
 - **Covertype**: [UCI Covertype Dataset](https://archive.ics.uci.edu/ml/datasets/covertype)
 - **Census**: [UCI Census Dataset](https://archive.ics.uci.edu/ml/datasets/US+Census+Data+%281990%29)
 - **Statlog**: [UCI Statlog Dataset](https://archive.ics.uci.edu/ml/datasets/Statlog+%28Shuttle%29)
+
+### Dataset Format Requirements
+
+For custom datasets, ensure your data follows this format:
+- **Contexts**: Feature vectors (numerical values)
+- **Actions**: Integer labels (0 to num_actions-1)
+- **Rewards**: Binary (0/1) or continuous values
+- **File format**: Text files with space/tab-separated values or NumPy arrays
 
 ## Project Structure
 
